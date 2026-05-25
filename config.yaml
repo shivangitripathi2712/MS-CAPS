@@ -1,0 +1,296 @@
+# KG-RD Compress Configuration
+# =============================
+# Reconstruction-guided pipeline:
+#   - Q_img  : CLIP-I + DINOv2 + LPIPS  (equal 1/3 each)
+#   - Q_cap  : BERTScore + CLIPScore     (equal 1/2 each)
+#   - Q_KG   : KG extracted from the RECONSTRUCTED IMAGE for BOTH baseline and
+#              candidates (image-side, symmetric). Baseline: c -> G(c) -> I_c -> KG.
+#              Candidate: c' -> G(c') -> I_c' -> KG. Compared against KG_I.
+#   - Gate   : explicit per-condition (C1..C4) with full logging
+#   - Output : I* = G(c*) saved alongside compressed caption
+#
+# NOTE ON CALIBRATION (text-only FLUX):
+#   FLUX never sees the original image; it regenerates the scene from text alone.
+#   So Q_img lands in ~0.30-0.55 and D_0 in ~0.29-0.35 even for the FULL caption.
+#   Gate thresholds and the distortion budget are calibrated to that reality.
+#   Earlier img2img-era values (tau_img=0.50, abs_threshold=0.25) made the gate
+#   mathematically unpassable (baseline itself failed C1, and delta < D_0).
+
+paths:
+  docci_dir: "./data/docci"
+
+  output_dir: "./outputs"
+  reconstruction_dir: "./outputs/reconstructions"
+  compressed_caption_dir: "./outputs/compressed_captions"
+  logs_dir: "./outputs/logs"
+
+  cache_dir: "./cache/datasets"
+  image_cache_dir: "./cache/images"
+  kg_cache_dir: "./cache/kgs"
+
+dataset:
+  name: "docci"
+  hf_name: "google/docci"
+  split: "test"
+
+  # Debug setting — set to null for full dataset. Override at runtime with
+  # --max-samples N.
+  max_samples: 1
+
+  min_caption_tokens: 30
+  image_column: "image"
+  caption_column: "description"
+
+scene_graph:
+  extractor: "vlm"
+
+  vlm:
+    model: "Qwen/Qwen2.5-VL-7B-Instruct"
+    device: "cuda:0"
+    dtype: "float16"
+    max_new_tokens: 1024
+    temperature: 0.0
+    do_sample: false
+
+  output_format: "triples"
+
+  max_objects: 50
+  max_relations: 80
+  keep_attributes: true
+  keep_relations: true
+
+  normalize:
+    lowercase: true
+    lemmatize: true
+    remove_articles: true
+    merge_synonyms: true
+
+rewriter:
+  type: "qwen_vl_text_only"
+  temperature: 0.7
+  top_p: 0.9
+  max_new_tokens: 512
+
+anchors:
+  max_kg_anchors: 6
+  kg_match_threshold: 0.55
+
+t2i:
+  backend: "flux"
+  model: "black-forest-labs/FLUX.1-dev"
+  device: "cuda:1"
+  dtype: "bfloat16"
+
+  image_size: 512
+  num_inference_steps: 20      # 20 for debug, 50 for paper-quality runs
+  guidance_scale: 3.5
+  max_sequence_length: 512
+
+  num_seeds: 1
+  seeds: [42]
+
+  save_reconstructions: true
+
+  # -------------------------------------------------------------------
+  # Reconstruction mode (Option B vs canonical text-only).
+  #   mode: "text_only"   -> FLUX text-only (default; layout NOT preserved)
+  #   mode: "controlnet"  -> FLUX ControlNet; layout shared from original I
+  # Structure conditioning extracts ONE control map (canny/depth) from the
+  # ORIGINAL image and reuses it for the baseline AND every candidate, so it
+  # advantages no caption (Q_img still measures caption content/informativeness).
+  # This is RD-VALID; img2img is NOT (img2img leaks the source pixels).
+  # -------------------------------------------------------------------
+  mode: "text_only"
+
+  structure_conditioning:
+    enabled: false                 # set true (or mode: controlnet) to use it
+    control_type: "canny"          # "canny" (no extra model) | "depth"
+    controlnet_model: "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro"
+    # controlnet_conditioning_scale: 0.75  # previously 0.6; higher = stronger layout lock (0.4-0.8). INERT while mode=text_only.
+    control_mode: null             # null -> auto for Union models (canny=0, depth=2)
+    depth_model: "depth-anything/Depth-Anything-V2-Small-hf"
+    canny_low: 100
+    canny_high: 200
+
+# ---------------------------------------------------------------------
+# Distortion metric.
+#
+# Q_img  = (1/3) * (CLIP_sim + DINO_sim + (1 - LPIPS))
+# Q_cap  = 0.5 * BERTScore(c, c*) + 0.5 * CLIPScore(c*, I)
+# Q_KG   = kg_obj_w*R_obj + kg_attr_w*R_attr + kg_rel_w*R_rel   (soft recall)
+#
+# D(c'_k) = alpha*(1-Q_img) + beta*(1-Q_cap) + gamma*(1-Q_KG)
+# D_0     = alpha*(1-Q_img_base) + gamma*(1-Q_KG_base)   [beta absent: c vs c = 1]
+# delta   = min((1 + epsilon) * D_0, absolute_threshold)
+#
+# BETA DOUBLE-COUNT FIX (beta_cap = 0.0):
+#   The baseline D_0 omits the beta*(1-Q_cap) term because Q_cap(c, c) = 1.
+#   But every candidate carries it, and a short caption can NEVER be textually
+#   similar to a 100+ token original, so beta inflated candidate D against a
+#   beta-free threshold (apples-to-oranges). Setting beta_cap = 0.0 makes the
+#   rate-distortion distortion image+KG only (same form as D_0), so D and D_0 are
+#   directly comparable. Caption similarity is STILL enforced as gate condition
+#   C2 (tau_cap) — it is just no longer double-counted into the distortion budget.
+#   Defensible framing: RD measures reconstruction distortion; caption brevity is
+#   the RATE axis, so penalizing brevity inside the distortion term double-counts.
+# ---------------------------------------------------------------------
+distortion:
+  use_relative_threshold: true
+
+  # Allow up to 50% distortion increase over the full-caption baseline. Text-only
+  # candidates are always somewhat worse than the full caption; 0.10 left no room.
+  epsilon: 0.50
+
+  weights:
+    alpha_img: 0.4
+    beta_cap:  0.0     # was 0.2 — removed from distortion budget; Q_cap still gated at tau_cap (C2)
+    gamma_kg:  0.4
+
+  # Q_KG recall mode. Soft (mpnet) recall drives the gate/gamma term so paraphrase
+  # ("motorcycle" ~ "motorbike") is not punished. Both hard+soft are always reported.
+  use_soft_kg: true
+
+  clip:
+    model: "ViT-L-14"
+    pretrained: "openai"
+    device: "cuda:0"
+
+  dino:
+    model: "dinov2_vitb14"
+    device: "cuda:0"
+
+  lpips:
+    net: "alex"
+    device: "cuda:0"
+
+  bertscore:
+    model: "microsoft/deberta-xlarge-mnli"
+    device: "cuda:0"
+
+  kg:
+    object_weight:    0.4
+    attribute_weight: 0.3
+    relation_weight:  0.3
+
+  # Absolute ceiling on delta. MUST sit above the typical text-only D_0 (~0.29-0.35)
+  # or it clamps the budget below the baseline and makes C4 unpassable.
+  absolute_threshold: 0.50
+
+# ---------------------------------------------------------------------
+# Faithfulness gate thresholds (text-only calibrated).
+#   C1: Q_img >= tau_img   C2: Q_cap >= tau_cap
+#   C3: Q_KG  >= tau_kg     C4: D     <= delta
+# ---------------------------------------------------------------------
+gate:
+  tau_img: 0.30    # text-only Q_img floor (baseline observed ~0.47)
+  tau_cap: 0.25    # 0.5*BERTScore + 0.5*chunked-CLIPScore floor
+  tau_kg:  0.30    # image-side KG soft-recall floor (baseline observed ~0.79)
+
+compression:
+  selection_rule: "maximum_compression_under_acceptable_fidelity"
+
+  max_iterations: 2
+  num_candidates_per_iteration: 7
+
+  # Budget ladder as fraction of ORIGINAL caption length (shortest tried first).
+  # Sweep 35-70% so shortest-faithful selection can pick the smallest caption that
+  # still preserves the scene.
+  budget_ratios:     [0.35, 0.40, 0.45, 0.50, 0.55, 0.65, 0.70]
+  # If nothing faithful at the primary ladder, escalate to gentler compression.
+  escalation_ratios: [0.75, 0.85, 0.95]
+
+  # Minimum-length floor (declared, frozen). Blocks fragment captions on EVERY
+  # selection path (gate, structural relaxation, fallback):
+  #   min_required = max(min_caption_tokens, min_target_tokens,
+  #                      round(min_target_ratio * original_tokens))
+  # On a 115-token caption -> max(5, 25, round(0.30*115)=35) = 35-token floor.
+  min_target_ratio:  0.30
+  min_target_tokens: 25
+
+  # Legacy range knobs (kept for back-compat; budget_ratios takes precedence).
+  min_target_token_ratio: 0.45
+  max_target_token_ratio: 0.80
+
+  require_strict_compression: true
+  min_caption_tokens: 5
+  preferred_target_tokens: 25
+  save_each_iteration: true
+
+  # Quality-aware selection (among gate-passing candidates).
+  #   select_by_quality: true  -> choose the SHORTEST caption whose reconstruction
+  #     quality (quality_metric) is within quality_margin of the BEST passer's
+  #     quality. Avoids picking a barely-passing short caption when a slightly
+  #     longer one reconstructs much better, while still preferring brevity.
+  #   select_by_quality: false -> legacy: first gate-pass (absolute shortest) wins.
+  # quality_metric must match a key in the per-candidate scores dict (e.g. "Q_img").
+  select_by_quality: true
+  quality_metric:    "Q_img"
+  quality_margin:    0.05
+
+baseline_gate:
+  enabled: true
+  min_baseline_kg_f1: 0.05
+  min_baseline_object_recall: 0.10
+
+fidelity_floors:
+  kg_f1_floor_drop: 0.08
+  object_recall_floor_drop: 0.05
+  attribute_recall_floor_drop: 0.12
+  attribute_recall_min_floor: 0.10
+
+fallback:
+  strategy: "best_candidate"
+
+evaluation:
+  compute_per_image: true
+  save_intermediate: true
+  plot_rd_curve: true
+
+  metrics:
+    - "caption_length_reduction"
+    - "clip_similarity"
+    - "dino_similarity"
+    - "lpips_distance"
+    - "bertscore"
+    - "clipscore"
+    - "kg_precision"
+    - "kg_recall"
+    - "kg_f1"
+    - "weighted_kg_f1_hard"
+    - "weighted_kg_f1_soft"
+    - "semantic_distortion"
+    - "overall_distortion"
+    - "anchor_preservation_rate"
+    - "chair_i"
+
+ablations:
+  epsilons: [0.05, 0.10, 0.15, 0.20]
+
+  distortion_configs:
+    img_only:   {alpha_img: 1.0, beta_cap: 0.0, gamma_kg: 0.0}
+    cap_only:   {alpha_img: 0.0, beta_cap: 1.0, gamma_kg: 0.0}
+    kg_only:    {alpha_img: 0.0, beta_cap: 0.0, gamma_kg: 1.0}
+    no_dino:    {alpha_img: 0.4, beta_cap: 0.2, gamma_kg: 0.4}
+    no_bertscore: {alpha_img: 0.4, beta_cap: 0.2, gamma_kg: 0.4}
+    full:       {alpha_img: 0.4, beta_cap: 0.2, gamma_kg: 0.4}
+
+  rewriter_configs:
+    deterministic: {temperature: 0.0, top_p: 1.0}
+    moderate:      {temperature: 0.7, top_p: 0.9}
+    diverse:       {temperature: 1.0, top_p: 0.95}
+
+  anchor_budgets: [3, 6, 10]
+  fallback_strategies: ["keep_original", "best_candidate"]
+
+  gate_threshold_configs:
+    loose:   {tau_img: 0.25, tau_cap: 0.20, tau_kg: 0.25}
+    default: {tau_img: 0.30, tau_cap: 0.25, tau_kg: 0.30}
+    strict:  {tau_img: 0.40, tau_cap: 0.35, tau_kg: 0.40}
+
+hardware:
+  device_mode: "cuda"
+  num_workers: 4
+  gpu_scene_graph: 0
+  gpu_t2i: 1
+
+seed: 42

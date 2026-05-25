@@ -1,0 +1,55 @@
+# Data (not shipped in repo — see README for how to obtain)
+inputs/
+data/
+*.jpg
+*.jpeg
+*.png
+!docs/*.png
+
+# Results / outputs / reconstructions
+outputs/
+results/
+debug_samples/
+*.xlsx
+*.csv
+*.json
+!config*.json
+
+# Model / cache
+cache/
+*.pth
+*.ckpt
+*.safetensors
+.cache/
+hf_cache/
+
+# API keys / secrets — NEVER commit
+.env
+*.key
+*_key.txt
+secrets*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Logs
+*.log
+nohup.out
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Backups
+*.bak
+*.bak2
+*.clean.py
+*.tar.gz
