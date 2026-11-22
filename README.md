@@ -1,140 +1,150 @@
 # MS-CAPS: Minimal Sufficient Image Captions for Safety-Critical Traffic Scene Understanding
 
-In safety-critical traffic scene understanding, a caption is useful only if it
-preserves the details that matter — vehicles, signs, plates, and their spatial
-relations — while discarding verbose, redundant description. MS-CAPS produces
-**minimal sufficient captions**: the shortest caption that still preserves the
-visual semantics of the scene, under a reconstruction-guided rate–distortion
-criterion.
+Code for the paper **"MS-CAPS: Minimal Sufficient Image Captions for Safety-Critical Traffic Scene Understanding"** (Findings of EACL 2027).
 
-The key idea is to measure caption sufficiency by *reconstruction*. A
-text-to-image model regenerates an image from a candidate caption; a knowledge
-graph (KG) extracted from that reconstruction is compared against the KG of the
-original image. The discrepancy is the semantic **distortion**. A caption is
-compressed only as far as a distortion gate allows, so safety-relevant content
-is retained while redundancy is removed.
+Long image captions often repeat themselves or include details that do not matter. MS-CAPS shortens a caption while keeping what matters in traffic scenes: vehicles, signs, license plates, and where things are relative to each other.
 
-## Method
+The main idea is to **test a short caption by redrawing the image from it**. A text-to-image model (FLUX.1-dev) generates an image from the short caption. We then compare that image with the original. If the important content is still there, the short caption is good enough. MS-CAPS keeps the shortest caption that passes this check.
 
-Given an image *I* and its dense caption *c*:
+## How it works
 
-1. **Reference semantics.** Extract a scene-graph `KG_I` (objects, attributes,
-   relations) and visible text (plates, signs, brands) from the original image
-   *I*. This defines the semantics that must survive compression.
+For each image *I* and its long caption *c*:
 
-2. **Anchor derivation.** From *c* and `KG_I`, derive:
-   - **Strict anchors** — verbatim content that must be kept (visible text such
-     as license plates and signage), and
-   - **Soft anchors** — salient objects and relations that should be preserved.
+1. **Build a scene graph of the original image.** Qwen2.5-VL lists the objects, attributes, and relations in *I*, plus any readable text (plates, signs). We call this graph `KG_I`.
+2. **Set a baseline.** FLUX redraws the image from the full caption *c*. We measure how far this redrawn image is from *I* (the baseline distortion `D_0`). The short caption may be at most a little worse than this (`delta = min((1 + epsilon) * D_0, absolute_threshold)`).
+3. **Choose what must be kept.**
+   - *Strict anchors*: exact text that must appear word for word, such as a license plate.
+   - *Soft anchors*: important facts that must still be said, in any wording.
+4. **Write shorter versions.** A rewriter (Qwen2.5-VL by default) writes several shorter captions at different target lengths (35% to 70% of the original).
+5. **Score each short caption.** FLUX redraws an image from it, and we compute:
+   - `Q_img`: how similar the redrawn image is to *I* (CLIP, DINOv2, LPIPS),
+   - `Q_cap`: how close the short caption is to the original (BERTScore, CLIPScore),
+   - `Q_KG`: how many objects, attributes, and relations of `KG_I` appear in the scene graph of the redrawn image,
+   - `D`: one combined distortion score.
+6. **Keep the shortest caption that passes all four checks:** `Q_img >= tau_img`, `Q_cap >= tau_cap`, `Q_KG >= tau_kg`, and `D <= delta`. If none pass, we try gentler lengths (75% to 95%), and then fall back to the best shorter caption.
 
-3. **Candidate generation.** A rewriter proposes shorter captions across a
-   ladder of token budgets, conditioned on the strict and soft anchors. If no
-   candidate at the primary budgets passes, the budgets are relaxed
-   (escalation).
-
-4. **Reconstruction-guided distortion.** Each candidate `c'` is reconstructed
-   to an image `G(c')` with a text-only text-to-image model. Distortion is
-   measured at three levels:
-   - **Q_img** — image similarity between *I* and `G(c')` (CLIP-I, DINOv2,
-     LPIPS),
-   - **Q_cap** — caption fidelity (BERTScore, CLIPScore),
-   - **Q_KG** — KG agreement: the KG of `G(c')` vs `KG_I` (object, attribute,
-     and relation recall),
-   combined into a single distortion `D`.
-
-5. **Distortion gate.** A candidate is accepted only if every quality condition
-   holds (Q_img, Q_cap, Q_KG above their thresholds) and `D` stays within the
-   baseline-derived budget.
-
-6. **Selection.** Among accepted candidates, MS-CAPS selects the **most
-   compressed** caption that remains faithful — the minimal sufficient caption.
-
-## Ablations
-
-The repository includes the two controlled studies reported in the paper:
-
-- **Compressor ablation** (`run_compressor_comparison.py`): swap the caption
-  compressor (Qwen / GPT-4o / Gemini) while holding the reconstruction and KG
-  evaluator fixed, isolating the effect of the rewriter.
-- **Evaluator ablation** (`evaluate_gpt4o.py`): swap the KG evaluator (GPT-4o as
-  scene-graph judge) while holding the pipeline fixed, testing whether results
-  depend on the choice of KG extractor.
+All settings used in the paper are in [`config.yaml`](config.yaml).
 
 ## Repository layout
 
 ```
-run_pipeline.py                 main MS-CAPS pipeline over a dataset
-run_compressor_comparison.py    compressor ablation (Qwen / GPT-4o / Gemini)
-evaluate_gpt4o.py               evaluator ablation (GPT-4o as KG judge)
-rewriters_api.py                GPT-4o / Gemini rewriter backends
-kg_anchors.py                   anchor-derivation utilities
-config.yaml                     run settings (paths, thresholds, budgets)
-requirements.txt                Python dependencies
-setup.sh                        environment setup helper
+run_pipeline.py                main MS-CAPS run over a dataset
+run_compressor_comparison.py   ablation: swap the rewriter (Qwen / GPT-4o / Gemini)
+evaluate_gpt4o.py              ablation: re-score results with GPT-4o as the scene-graph extractor
+llm_rewriters.py               GPT-4o and Gemini rewriters (same prompt as Qwen)
+config.yaml                    all settings and thresholds
+requirements.txt               Python packages
+setup.sh                       one-step install
 src/
-  dataset.py                    image + dense-caption loader
-  scene_graph.py                VLM KG extraction, comparison, anchors
-  t2i_reconstruct.py            text-to-image reconstruction G
-  distortion.py                 Q_img / Q_cap / Q_KG, distortion D, gate
-  compressor.py                 core compressor (Stage 1 + Stage 2, selection)
-  parse_tree.py                 caption parsing
-  token_importance.py           token-level importance
-  evaluate.py                   metrics, CSVs, tables
+  compressor.py                the MS-CAPS loop: anchors, candidates, gate, selection
+  scene_graph.py               scene-graph extraction (Qwen2.5-VL) and graph comparison
+  t2i_reconstruct.py           FLUX.1-dev image reconstruction
+  distortion.py                Q_img, Q_cap, Q_KG, distortion D, and the gate
+  parse_tree.py                strict-anchor extraction from the caption
+  dataset.py                   loads (image, caption) pairs from folders
+  evaluate.py                  metrics tables and CSVs
 ```
 
-## Setup
+## Installation
 
 ```bash
 conda create -n mscaps python=3.10 -y
 conda activate mscaps
-pip install -r requirements.txt
-# optional spaCy model (a regex fallback is used if absent):
-python -m spacy download en_core_web_sm
+bash setup.sh
 ```
 
-A CUDA GPU is required: the reconstruction model and the VLM KG extractor run
-on GPU.
+FLUX.1-dev is a gated model. Accept its license on its [Hugging Face page](https://huggingface.co/black-forest-labs/FLUX.1-dev) and log in before the first run:
+
+```bash
+huggingface-cli login
+```
+
+**Hardware.** The default config uses two GPUs: `cuda:0` for Qwen2.5-VL-7B and the metrics, and `cuda:1` for FLUX.1-dev. To change this, edit the `device` fields in `config.yaml`.
 
 ## Data
 
-The image / dense-caption dataset is **not** included in this repository. Place
-data under `inputs/` in the layout expected by `src/dataset.py`:
+Images and captions are not included in this repository. We used three traffic datasets (50 images each):
+
+- Indian Vehicle Dataset (DataCluster Labs)
+- [CODA-LM](https://coda-dataset.github.io/coda-lm/)
+- NuInteract
+
+Put each dataset in two folders: one with images, one with captions. Each caption is a `.txt` file with the same name as its image:
 
 ```
 inputs/
-  <dataset>/
-    images/      # image files
-    captions/    # one .txt caption per image, matched by filename stem
+  vehicle_image_dataset/
+    indian_vehicle_images/indian_vehicle_images/   # 0001.jpg, 0002.jpg, ...
+    generated_captions/                            # 0001.txt, 0002.txt, ...
 ```
 
-Set the corresponding paths in `config.yaml`.
+Then point `config.yaml` to the folders:
+
+```yaml
+dataset:
+  local:
+    data_dir: "./inputs"
+    images_subdir: "vehicle_image_dataset/indian_vehicle_images/indian_vehicle_images"
+    captions_subdir: "vehicle_image_dataset/generated_captions"
+```
+
+To run on another dataset, change these three paths (and `paths.output_dir`, so results stay separate). Captions with fewer than 30 words are skipped (`min_caption_tokens`).
 
 ## Running
 
-Main pipeline:
+**Main pipeline** (50 images):
 
 ```bash
 python run_pipeline.py --config config.yaml --max-samples 50
 ```
 
-Compressor ablation (needs API keys for the hosted rewriters):
+Finished images are skipped if you re-run the command. Use `--no-resume` to recompute them.
+
+**Rewriter ablation** (Qwen2.5-VL vs. GPT-4o vs. Gemini 2.5 Pro). Only the rewriter changes; everything else stays fixed.
 
 ```bash
-export OPENAI_API_KEY=<YOUR_OPENAI_KEY>
-export GEMINI_API_KEY=<YOUR_GEMINI_KEY>
+export OPENAI_API_KEY=...
+export GEMINI_API_KEY=...
 python run_compressor_comparison.py --config config.yaml --max-samples 50 \
     --models qwen gpt4o gemini
 ```
 
-Evaluator ablation (run **after** the main pipeline, on its result JSONs):
+**Evaluator ablation** (GPT-4o as the scene-graph extractor). Run this after the main pipeline; it re-scores its outputs.
 
 ```bash
-export OPENAI_API_KEY=<YOUR_OPENAI_KEY>
-python evaluate_gpt4o.py --config config.yaml
+export OPENAI_API_KEY=...
+python evaluate_gpt4o.py --output-dir outputs
 ```
 
-## Notes
+API keys are read only from environment variables. None are stored in this repository.
 
-- API keys are read from environment variables; none are stored in the repo.
-- Cache and output directories are created locally at run time.
-- Per-sample results, reconstructions, and reports are written under `outputs/`.
+## Outputs
+
+```
+outputs/
+  results/<image_id>.json        final caption, scores, anchors, every candidate step
+  results/metrics.csv            per-image metrics
+  results/metrics_summary.csv    averages
+  results/summary.json           run summary (status counts, compression, distortion)
+  kg_rd_report.xlsx              Excel report with images side by side
+  reconstructions/<image_id>/    FLUX images for the baseline and the candidates
+  kg_debug/  candidates/  debug_samples/   intermediate files (if save_intermediate: true)
+  compressor_<model>/            per-rewriter outputs from the rewriter ablation
+  compressor_comparison/         per_sample.csv and summary.csv for the rewriter ablation
+  results_gpt4o/                 per-image GPT-4o scores from the evaluator ablation
+```
+
+Each image ends with one of these statuses:
+
+- `compressed`: a shorter caption passed all checks.
+- `compressed_via_fallback`: no caption passed, so the best shorter one was kept.
+- `skipped_low_baseline_fidelity`: even the full caption could not be redrawn well, so the image was skipped.
+- `kept_original_rewriter_failed`: the rewriter returned no usable caption.
+
+## Citation
+
+If you use this code, please cite our EACL 2027 Findings paper. The BibTeX entry will be added here once the proceedings are online.
+
+## License
+
+This code is released under the [MIT License](LICENSE). The models (Qwen2.5-VL, FLUX.1-dev) and datasets have their own licenses; please check them before use.

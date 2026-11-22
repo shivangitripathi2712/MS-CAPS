@@ -1,5 +1,16 @@
+"""
+Run the MS-CAPS pipeline over a dataset.
+
+Writes one result JSON per image to <output_dir>/results/, plus metrics CSVs
+and an Excel report (<output_dir>/kg_rd_report.xlsx).
+
+    python run_pipeline.py --config config.yaml --max-samples 50
+"""
+
 import argparse
+import json
 import sys
+import traceback
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -281,7 +292,7 @@ def write_excel(results: List[Dict[str, Any]], config: Dict[str, Any], output_pa
     print(f"\n[Excel] Saved: {output_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description="KG-RD pipeline runner")
+    parser = argparse.ArgumentParser(description="MS-CAPS pipeline runner")
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--max-samples", type=int, default=None,
                         help="Override dataset.max_samples (None = use config).")
@@ -301,7 +312,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "config_used.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
-    print("=" * 70 + "\nKG-RD PIPELINE\n" + "=" * 70)
+    print("=" * 70 + "\nMS-CAPS PIPELINE\n" + "=" * 70)
     dataset = VehicleCaptionDataset.from_config(config)
     n = len(dataset) if max_samples is None else min(int(max_samples), len(dataset))
     print(f"Dataset: {len(dataset)} samples; processing {n}.")
@@ -316,7 +327,6 @@ def main():
 
         if not args.no_resume and result_json.exists():
             try:
-                import json
                 cached = json.loads(result_json.read_text(encoding="utf-8"))
                 results.append(cached)
                 print(f"[{idx+1}/{n}] {image_id} (cached, skipped)")
@@ -330,7 +340,6 @@ def main():
                 image=sample["image"], caption=sample["caption"], image_id=image_id)
             results.append(make_json_serializable(asdict(result)))
         except Exception as exc:
-            import traceback
             print(f"[ERROR] {image_id}: {exc}")
             traceback.print_exc()
             continue
@@ -344,10 +353,10 @@ def main():
     df = ev.compute_dataset_metrics(results)
     ev.save_metrics_csv(df, str(results_dir / "metrics.csv"))
     ev.save_metrics_csv(ev.summarize_dataframe(df), str(results_dir / "metrics_summary.csv"))
-    ev.print_summary_table(df, label="KG-RD — ALL samples")
+    ev.print_summary_table(df, label="MS-CAPS — ALL samples")
     compressed = ev.filter_compressed(df)
     if len(compressed) and len(compressed) != len(df):
-        ev.print_summary_table(compressed, label="KG-RD — COMPRESSED only")
+        ev.print_summary_table(compressed, label="MS-CAPS — COMPRESSED only")
 
     print("\n" + "=" * 70)
     print(f"DONE. {len(results)} results | Excel: {excel_path}")

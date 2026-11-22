@@ -1,3 +1,16 @@
+"""
+Evaluator ablation: re-score the main pipeline's outputs with GPT-4o as the
+scene-graph (KG) extractor instead of Qwen2.5-VL.
+
+For every result JSON from run_pipeline.py, GPT-4o extracts a KG from the
+original image I and from the final reconstruction G(c*), and the two KGs are
+compared with the same compare_scene_graphs() used in the main pipeline.
+
+Run run_pipeline.py first, then:
+    export OPENAI_API_KEY=...
+    python evaluate_gpt4o.py --output-dir outputs
+"""
+
 import argparse
 import base64
 import csv
@@ -258,7 +271,8 @@ class GPT4oExtractor:
 def load_pairs(results_glob: str, max_samples: Optional[int]) -> List[Dict[str, str]]:
     pairs = []
     for jf in sorted(glob.glob(results_glob)):
-        d = json.load(open(jf))
+        with open(jf, encoding="utf-8") as f:
+            d = json.load(f)
         orig = d.get("original_image_path"); recon = d.get("final_reconstruction_path")
         if orig and recon and os.path.exists(orig) and os.path.exists(recon):
             pairs.append({"image_id": d.get("image_id", Path(jf).stem),
@@ -270,7 +284,6 @@ def load_pairs(results_glob: str, max_samples: Optional[int]) -> List[Dict[str, 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--output-dir", default="outputs")
     ap.add_argument("--max-samples", type=int, default=None)
@@ -281,7 +294,7 @@ def main():
         print("ERROR: set OPENAI_API_KEY env var first."); return
 
     out = Path(args.output_dir)
-    pairs = load_pairs(str(out / "results" / "dc_*.json"), args.max_samples)
+    pairs = load_pairs(str(out / "results" / "*.json"), args.max_samples)
     if args.compressed_only:
         pairs = [p for p in pairs if p["status"] == "compressed"]
     print(f"[eval] {len(pairs)} pairs to score with GPT-4o ({args.model})")
@@ -309,8 +322,9 @@ def main():
               f"KG-F1soft={row['kg_f1_soft']:.3f} CHAIR={row['chair_i']:.3f} "
               f"(objI={row['n_obj_I']} relI={row['n_rel_I']})")
         print(f"    [cost so far] in={ex.total_in} out={ex.total_out} tok  ~${ex.cost():.4f}")
-        json.dump({"comparison_text": {"missing": cmp["missing_text"], "extra": cmp["extra_text"]}, **row},
-                  open(per_dir / f"{p['image_id']}.json", "w"), indent=2)
+        with open(per_dir / f"{p['image_id']}.json", "w", encoding="utf-8") as f:
+            json.dump({"comparison_text": {"missing": cmp["missing_text"], "extra": cmp["extra_text"]}, **row},
+                      f, indent=2)
 
     csv_path = out / "results" / "metrics_gpt4o.csv"
     with open(csv_path, "w", newline="") as f:

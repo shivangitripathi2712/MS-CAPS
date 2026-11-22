@@ -1,3 +1,7 @@
+"""Local (image, dense caption) dataset loader.
+
+Each caption is a ``.txt`` file whose stem matches an image file name.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,14 +15,6 @@ from torch.utils.data import Dataset
 _DEFAULT_IMAGES_SUBDIR = "vehicle_image_dataset/indian_vehicle_images/indian_vehicle_images"
 _DEFAULT_CAPTIONS_SUBDIR = "vehicle_image_dataset/generated_captions"
 _DEFAULT_IMAGE_EXTS: Tuple[str, ...] = (".jpg", ".jpeg", ".png")
-
-# Legacy constructor kwargs (from the old HF-based loader) that are accepted but
-# ignored, so callers written against the old signature do not crash.
-_LEGACY_KWARGS = {
-    "hf_name", "split", "cache_dir", "image_column", "caption_column",
-    "trust_remote_code", "name",
-}
-
 
 class VehicleCaptionDataset(Dataset):
     """
@@ -39,8 +35,6 @@ class VehicleCaptionDataset(Dataset):
         Skip captions with fewer than this many whitespace tokens.
     image_exts : Sequence[str]
         Image extensions to try when resolving an image for a caption stem.
-    **legacy_kwargs
-        Silently accepted leftovers from the previous HF loader signature.
     """
 
     def __init__(
@@ -51,20 +45,12 @@ class VehicleCaptionDataset(Dataset):
         max_samples: Optional[int] = None,
         min_caption_tokens: int = 30,
         image_exts: Sequence[str] = _DEFAULT_IMAGE_EXTS,
-        **legacy_kwargs: Any,
     ):
         self.data_dir = Path(data_dir)
         self.images_dir = self.data_dir / images_subdir
         self.captions_dir = self.data_dir / captions_subdir
         self.min_caption_tokens = int(min_caption_tokens)
         self.image_exts = tuple(e.lower() for e in image_exts)
-
-        ignored = {k: v for k, v in legacy_kwargs.items() if k in _LEGACY_KWARGS}
-        unexpected = set(legacy_kwargs) - _LEGACY_KWARGS
-        if ignored:
-            print(f"[VehicleCaptionDataset] Ignoring legacy kwargs: {sorted(ignored)}")
-        if unexpected:
-            print(f"[VehicleCaptionDataset] WARNING: unexpected kwargs: {sorted(unexpected)}")
 
         if not self.captions_dir.is_dir():
             raise FileNotFoundError(f"Caption directory not found: {self.captions_dir}")
@@ -207,32 +193,8 @@ class VehicleCaptionDataset(Dataset):
         )
 
 
-# Backward-compatible alias: existing imports of ``DOCCIDataset`` keep working.
-DOCCIDataset = VehicleCaptionDataset
-
-
-# ---------------------------------------------------------------------------- #
-# Debug / utility helpers (interface preserved from the previous loader)
-# ---------------------------------------------------------------------------- #
-def get_docci_sample(dataset: VehicleCaptionDataset, idx: int = 0) -> Dict[str, Any]:
-    """Print and return one sample for debugging."""
-    item = dataset[idx]
-    print("=" * 80)
-    print(f"Image ID: {item['image_id']}")
-    print(f"Index: {item['index']}")
-    print(f"Caption tokens: {item['token_count']}")
-    print("-" * 80)
-    caption = item["caption"]
-    print(caption[:500] + "..." if len(caption) > 500 else caption)
-    print("=" * 80)
-    return item
-
-
-def docci_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Custom collate for DataLoader. PIL images cannot be default-collated, so we
-    return parallel lists instead of stacked tensors.
-    """
+def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """DataLoader collate: PIL images cannot be stacked, so return parallel lists."""
     return {
         "images": [item["image"] for item in batch],
         "captions": [item["caption"] for item in batch],
@@ -240,12 +202,3 @@ def docci_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         "indices": [item["index"] for item in batch],
         "token_counts": [item["token_count"] for item in batch],
     }
-
-
-if __name__ == "__main__":
-    dataset = VehicleCaptionDataset(
-        data_dir="./inputs",
-        max_samples=2,
-        min_caption_tokens=30,
-    )
-    get_docci_sample(dataset, 0)

@@ -1,18 +1,16 @@
-import os
-from typing import List, Optional, Sequence
+"""
+API-based caption rewriters (GPT-4o and Gemini) for the compressor ablation.
 
-# Reuse the project's base class, helpers, and the Qwen rewriter's prompt+parser.
-# We instantiate a "prompt helper" QwenVLRewriter WITHOUT a model only to borrow
-# _build_prompt / _parse_json_array — but to avoid needing the GPU model, we
-# instead import the building blocks directly and replicate the two pure methods.
-from src.compressor import (
-    CaptionRewriter,
-    count_tokens,
-    clean_caption_spacing,
-)
+They use exactly the same prompt, JSON parsing, and de-duplication as the
+default Qwen2.5-VL rewriter in src/compressor.py, so only the model changes.
+"""
 
 import json
+import os
 import re
+from typing import List, Optional
+
+from src.compressor import CaptionRewriter, clean_caption_spacing, count_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +145,7 @@ class GPT4oRewriter(CaptionRewriter):
 class GeminiRewriter(CaptionRewriter):
     """Caption compressor backend using the Google Gemini API (text-only generation)."""
 
-    def __init__(self, model: str = "gemini-1.5-pro",
+    def __init__(self, model: str = "gemini-2.5-pro",
                  temperature: float = 0.7, max_tokens: int = 700):
         import google.generativeai as genai
         key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")

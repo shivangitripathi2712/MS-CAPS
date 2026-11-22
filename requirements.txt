@@ -1,39 +1,39 @@
-# Core deep learning
+# Deep learning
 torch>=2.1.0
 torchvision>=0.16.0
 accelerate>=0.25.0
 safetensors>=0.4.0
 
-# Hugging Face models and datasets
+# Models: Qwen2.5-VL (KG extraction + rewriter), FLUX.1-dev (reconstruction)
 transformers>=4.49.0
 diffusers>=0.30.0
-datasets>=2.16.0
 huggingface_hub>=0.20.0
 qwen-vl-utils>=0.0.8
+sentencepiece>=0.1.99
+protobuf>=3.20.0
 
-# Text-to-image reconstruction
-invisible-watermark>=0.2.0
-
-# Image and perceptual metrics
-Pillow>=10.0.0
-lpips>=0.1.4
-scikit-image>=0.22.0
+# Metrics: CLIP, LPIPS, BERTScore, sentence embeddings
 open_clip_torch>=2.24.0
-
-# Caption span extraction and NLP
-spacy>=3.7.0
-nltk>=3.8.0
+lpips>=0.1.4
+bert-score>=0.3.13
 sentence-transformers>=2.6.0
 
-# Graph construction and KG comparison
+# Text processing and graphs
+spacy>=3.7.0
 networkx>=3.2.0
 
-# Data processing
+# Data, reports, plots
 numpy>=1.24.0
 pandas>=2.0.0
-scipy>=1.11.0
+Pillow>=10.0.0
 pyyaml>=6.0.0
 tqdm>=4.66.0
-
-# Plotting and evaluation
+openpyxl>=3.1.0
 matplotlib>=3.8.0
+
+# Optional: ControlNet mode (canny edges)
+opencv-python>=4.8.0
+
+# Optional: compressor ablation with API models
+openai>=1.40.0
+google-generativeai>=0.8.0

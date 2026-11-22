@@ -1,151 +1,153 @@
+"""
+Compressor ablation: swap the caption rewriter (Qwen2.5-VL / GPT-4o / Gemini)
+while keeping everything else fixed (KG extractor, FLUX reconstructor, metrics,
+gate, and budgets).
+
+Models are loaded once. For each rewriter, results are written to
+<output_dir>/compressor_<model>/ so runs do not overwrite each other.
+
+Usage:
+    export OPENAI_API_KEY=...      # for gpt4o
+    export GEMINI_API_KEY=...      # for gemini
+    python run_compressor_comparison.py --config config.yaml \
+        --max-samples 50 --models qwen gpt4o gemini
+"""
+
 import argparse
 import csv
-import glob
-import json
-import os
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 import yaml
-from PIL import Image
 
-from src.compressor import KGRDCompressor
-from src.scene_graph import VLMSceneGraphExtractor
-
-
-def load_dataset(config: Dict[str, Any], max_samples: Optional[int]) -> List[Dict[str, str]]:
-    """
-    Return [{image_id, image_path, caption}, ...].
-
-    NOTE: adapt this to however the MAIN run reads its 50 (image, dense caption)
-    pairs. The placeholder reconstructs them from the saved debug_samples + the
-    original captions stored in outputs/results/dc_*.json (which record the
-    original caption and original_image_path). If your main loader reads from a
-    manifest/CSV/JSON dataset file instead, replace this body to read that.
-    """
-    items = []
-    for jf in sorted(glob.glob("outputs/results/dc_*.json")):
-        d = json.load(open(jf))
-        img = d.get("original_image_path")
-        cap = d.get("original_caption") or d.get("dense_caption")
-        sid = d.get("image_id", Path(jf).stem)
-        if img and cap and os.path.exists(img):
-            items.append({"image_id": sid, "image_path": img, "caption": cap})
-        if max_samples and len(items) >= max_samples:
-            break
-    return items
+from src.compressor import KGRDCompressor, QwenVLRewriter, make_json_serializable
+from src.dataset import VehicleCaptionDataset
 
 
-def build_rewriter(name: str, sg_extractor, cfg: Dict[str, Any]):
+def build_rewriter(name: str, compressor: KGRDCompressor, cfg: Dict[str, Any], args):
     name = name.lower()
+    rw = cfg.get("rewriter", {})
     if name == "qwen":
-        from src.compressor import QwenVLRewriter
-        rw = cfg.get("rewriter", {})
-        return QwenVLRewriter(vlm_extractor=sg_extractor,
+        # Reuse the already-loaded Qwen2.5-VL model (no second GPU copy).
+        return QwenVLRewriter(vlm_extractor=compressor.sg_extractor,
                               max_new_tokens=rw.get("max_new_tokens", 512),
                               temperature=rw.get("temperature", 0.7),
                               top_p=rw.get("top_p", 0.9))
     if name == "gpt4o":
         from llm_rewriters import GPT4oRewriter
-        return GPT4oRewriter()
+        return GPT4oRewriter(model=args.gpt4o_model)
     if name == "gemini":
         from llm_rewriters import GeminiRewriter
-        return GeminiRewriter()
-    raise ValueError(f"unknown model '{name}' (use qwen / gpt4o / gemini)")
+        return GeminiRewriter(model=args.gemini_model)
+    raise ValueError(f"Unknown model '{name}' (use: qwen, gpt4o, gemini)")
 
 
-def run_one_model(name: str, dataset, config, sg_extractor) -> List[Dict[str, Any]]:
-    rewriter = build_rewriter(name, sg_extractor, config)
-    # Same pipeline, only the rewriter differs.
-    comp = KGRDCompressor.from_config(config, rewriter=rewriter)
+def set_output_dir(compressor: KGRDCompressor, out_dir: Path) -> None:
+    """Point all of the compressor's output folders at out_dir."""
+    compressor.output_dir = out_dir
+    compressor.reconstruction_dir = out_dir / "reconstructions"
+    compressor.result_dir = out_dir / "results"
+    compressor.kg_debug_dir = out_dir / "kg_debug"
+    compressor.candidate_debug_dir = out_dir / "candidates"
+    compressor.debug_dir = out_dir / "debug_samples"
+    for d in (compressor.result_dir, compressor.kg_debug_dir,
+              compressor.candidate_debug_dir, compressor.debug_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+
+def run_one_model(name: str, dataset, n: int, compressor: KGRDCompressor) -> List[Dict[str, Any]]:
     rows = []
-    for i, item in enumerate(dataset, 1):
-        img = Image.open(item["image_path"]).convert("RGB")
-        print(f"\n[{name}] [{i}/{len(dataset)}] {item['image_id']}")
+    for idx in range(n):
+        sample = dataset[idx]
+        image_id = sample["image_id"]
+        print(f"\n[{name}] [{idx + 1}/{n}] {image_id}")
         try:
-            result = comp.compress_single(img, item["caption"], image_id=item["image_id"])
-        except TypeError:
-            # fall back if the method name/signature differs — adapt to your API
-            result = comp.compress(img, item["caption"])
-        # Pull metrics from the result dict; key names follow the main-run schema.
-        rows.append({
+            result = compressor.compress_single(sample["image"], sample["caption"], image_id=image_id)
+        except Exception as exc:
+            print(f"[ERROR] {image_id}: {exc}")
+            continue
+        r = make_json_serializable(asdict(result))
+        fd = r.get("final_distortion_details", {}) or {}
+        row = {
             "model": name,
-            "image_id": item["image_id"],
-            "status": result.get("status", ""),
-            "compression_ratio": result.get("compression_ratio"),
-            "Q_img": result.get("Q_img"),
-            "Q_cap": result.get("Q_cap"),
-            "Q_KG": result.get("Q_KG"),
-            "D_final": result.get("D_final"),
-            "passed": 1 if result.get("status", "").startswith("compressed") else 0,
-        })
-        r = rows[-1]
-        print(f"    CR={r['compression_ratio']} Q_img={r['Q_img']} Q_cap={r['Q_cap']} "
-              f"Q_KG={r['Q_KG']} D_final={r['D_final']} status={r['status']}")
+            "image_id": image_id,
+            "status": r["status"],
+            "compression_ratio": r["compression_ratio"],
+            "Q_img": fd.get("Q_img"),
+            "Q_cap": fd.get("Q_cap"),
+            "Q_KG": fd.get("Q_KG"),
+            "D_final": r["final_distortion"],
+            "passed": int(str(r["status"]).startswith("compressed")),
+        }
+        rows.append(row)
+        print(f"    CR={row['compression_ratio']} Q_img={row['Q_img']} Q_cap={row['Q_cap']} "
+              f"Q_KG={row['Q_KG']} D={row['D_final']} status={row['status']}")
     return rows
 
 
 def aggregate(rows: List[Dict[str, Any]], model: str) -> Dict[str, Any]:
-    sub = [r for r in rows if r["model"] == model and r["passed"] == 1]
-    if not sub:
-        return {"model": model, "n_passed": 0}
-    def m(k):
+    """Mean/std over samples that were compressed (passed or via fallback)."""
+    all_m = [r for r in rows if r["model"] == model]
+    sub = [r for r in all_m if r["passed"] == 1]
+    out = {"model": model, "n_total": len(all_m), "n_passed": len(sub),
+           "pass_rate": len(sub) / max(len(all_m), 1)}
+    for k in ("compression_ratio", "Q_img", "Q_cap", "Q_KG", "D_final"):
         vals = [r[k] for r in sub if r[k] is not None]
-        return float(np.mean(vals)) if vals else None
-    def s(k):
-        vals = [r[k] for r in sub if r[k] is not None]
-        return float(np.std(vals)) if vals else None
-    n_total = len([r for r in rows if r["model"] == model])
-    return {
-        "model": model, "n_passed": len(sub), "n_total": n_total,
-        "pass_rate": len(sub) / max(n_total, 1),
-        "CR_mean": m("compression_ratio"), "CR_std": s("compression_ratio"),
-        "Q_img": m("Q_img"), "Q_cap": m("Q_cap"), "Q_KG": m("Q_KG"),
-        "D_final": m("D_final"),
-    }
+        out[f"{k}_mean"] = float(np.mean(vals)) if vals else None
+        out[f"{k}_std"] = float(np.std(vals)) if vals else None
+    return out
+
+
+def write_csv(rows: List[Dict[str, Any]], path: Path) -> None:
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    print(f"[compare] wrote {path}")
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="MS-CAPS compressor ablation")
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--max-samples", type=int, default=50)
-    ap.add_argument("--models", nargs="+", default=["qwen", "gpt4o"],
-                    help="subset of: qwen gpt4o gemini")
-    ap.add_argument("--output-dir", default="outputs")
+    ap.add_argument("--models", nargs="+", default=["qwen", "gpt4o", "gemini"],
+                    help="Any of: qwen gpt4o gemini")
+    ap.add_argument("--gpt4o-model", default="gpt-4o-2024-08-06")
+    ap.add_argument("--gemini-model", default="gemini-2.5-pro")
     args = ap.parse_args()
 
-    config = yaml.safe_load(open(args.config))
-    dataset = load_dataset(config, args.max_samples)
-    print(f"[compare] {len(dataset)} samples; models={args.models}")
-    if not dataset:
-        print("[compare] no samples loaded — adapt load_dataset() to your dataset loader."); return
+    with open(args.config, encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    config.setdefault("dataset", {})["max_samples"] = args.max_samples
 
-    # One shared KG extractor (the FIXED scorer); rewriters are swapped per model.
-    sg_extractor = VLMSceneGraphExtractor(
-        model_name=config.get("scene_graph", {}).get("model_name", "Qwen/Qwen2.5-VL-7B-Instruct"),
-        device=config.get("scene_graph", {}).get("device", "cuda:0"),
-    )
+    dataset = VehicleCaptionDataset.from_config(config)
+    n = min(args.max_samples, len(dataset))
+    print(f"[compare] {n} samples; models={args.models}")
 
-    all_rows = []
+    # Loads the fixed parts once: KG extractor, FLUX, metrics.
+    compressor = KGRDCompressor.from_config(config)
+    base_out = Path(config.get("paths", {}).get("output_dir", "./outputs"))
+
+    all_rows: List[Dict[str, Any]] = []
     for name in args.models:
-        all_rows.extend(run_one_model(name, dataset, config, sg_extractor))
+        compressor.rewriter = build_rewriter(name, compressor, config, args)
+        set_output_dir(compressor, base_out / f"compressor_{name}")
+        all_rows.extend(run_one_model(name, dataset, n, compressor))
 
-    out = Path(args.output_dir) / "results"
+    if not all_rows:
+        print("[compare] no results produced.")
+        return
+
+    out = base_out / "compressor_comparison"
     out.mkdir(parents=True, exist_ok=True)
-    per_csv = out / "compressor_comparison_per_sample.csv"
-    with open(per_csv, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(all_rows[0].keys())); w.writeheader(); w.writerows(all_rows)
-    print(f"\n[compare] wrote {per_csv}")
-
-    print("\n==== Compressor comparison (passed/compressed subset) ====")
+    write_csv(all_rows, out / "per_sample.csv")
     aggs = [aggregate(all_rows, name) for name in args.models]
-    agg_csv = out / "compressor_comparison_summary.csv"
-    with open(agg_csv, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(aggs[0].keys())); w.writeheader(); w.writerows(aggs)
+    write_csv(aggs, out / "summary.csv")
+    print("\n==== Compressor comparison (compressed samples) ====")
     for a in aggs:
         print(a)
-    print(f"\n[compare] wrote {agg_csv}")
 
 
 if __name__ == "__main__":
