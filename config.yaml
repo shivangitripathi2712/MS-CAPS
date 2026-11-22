@@ -78,7 +78,7 @@ distortion:
   absolute_threshold: 0.50   # cap on delta; must sit above typical D_0
   weights:
     alpha_img: 0.4
-    beta_cap: 0.0            # caption similarity is enforced by the gate (C2), not D
+    beta_cap: 0.2            # value used for the paper results
     gamma_kg: 0.4
   use_soft_kg: true          # embedding-based KG matching ("motorbike" ~ "motorcycle")
   clip:
