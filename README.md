@@ -5,6 +5,12 @@ Department of Computer Science, Texas State University, San Marcos, TX, USA
 
 Code for the paper **"MS-CAPS: Minimal Sufficient Image Captions for Safety-Critical Traffic Scene Understanding"** (Findings of EACL 2027).
 
+<p align="center">
+  <img src="assets/ms-caps-overview.png" alt="Overview of MS-CAPS" width="100%">
+</p>
+
+<p align="center"><em><b>Overview of MS-CAPS.</b> Stage 1 compares the knowledge graphs of the original image and of the image reconstructed from the full caption, and derives strict text anchors and soft KG anchors. Stage 2 generates shorter candidates guided by these anchors, reconstructs an image from each, and scores its image, caption, and KG faithfulness. The shortest candidate that passes all checks is selected; otherwise, the original caption is kept.</em></p>
+
 Long image captions often repeat themselves or include details that do not matter. MS-CAPS shortens a caption while keeping what matters in traffic scenes: vehicles, signs, license plates, and where things are relative to each other.
 
 The main idea is to **test a short caption by redrawing the image from it**. A text-to-image model (FLUX.1-dev) generates an image from the short caption. We then compare that image with the original. If the important content is still there, the short caption is good enough. MS-CAPS keeps the shortest caption that passes this check.
