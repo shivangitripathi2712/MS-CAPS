@@ -1,5 +1,8 @@
 # MS-CAPS: Minimal Sufficient Image Captions for Safety-Critical Traffic Scene Understanding
 
+**Shivangi Tripathi, Heena Rathore**
+Department of Computer Science, Texas State University, San Marcos, TX, USA
+
 Code for the paper **"MS-CAPS: Minimal Sufficient Image Captions for Safety-Critical Traffic Scene Understanding"** (Findings of EACL 2027).
 
 Long image captions often repeat themselves or include details that do not matter. MS-CAPS shortens a caption while keeping what matters in traffic scenes: vehicles, signs, license plates, and where things are relative to each other.
