@@ -11,17 +11,17 @@ The main idea is to **test a short caption by redrawing the image from it**. A t
 For each image *I* and its long caption *c*:
 
 1. **Build a scene graph of the original image.** Qwen2.5-VL lists the objects, attributes, and relations in *I*, plus any readable text (plates, signs). We call this graph `KG_I`.
-2. **Set a baseline.** FLUX redraws the image from the full caption *c*. We measure how far this redrawn image is from *I* (the baseline distortion `D_0`). The short caption may be at most a little worse than this (`delta = min((1 + epsilon) * D_0, absolute_threshold)`).
+2. **Set a baseline.** FLUX redraws the image from the full caption *c*. We measure how far this redrawn image is from *I* (the baseline distortion `D_0`). The short caption may be at most a little worse than this (`delta = (1 + epsilon) * D_0`).
 3. **Choose what must be kept.**
    - *Strict anchors*: exact text that must appear word for word, such as a license plate.
    - *Soft anchors*: important facts that must still be said, in any wording.
-4. **Write shorter versions.** A rewriter (Qwen2.5-VL by default) writes several shorter captions at different target lengths (35% to 70% of the original).
+4. **Write shorter versions.** A rewriter (Qwen2.5-VL by default) writes several shorter captions at different target lengths (15%, 25%, 35%, 45%, and 55% of the original).
 5. **Score each short caption.** FLUX redraws an image from it, and we compute:
    - `Q_img`: how similar the redrawn image is to *I* (CLIP, DINOv2, LPIPS),
    - `Q_cap`: how close the short caption is to the original (BERTScore, CLIPScore),
    - `Q_KG`: how many objects, attributes, and relations of `KG_I` appear in the scene graph of the redrawn image,
    - `D`: one combined distortion score.
-6. **Keep the shortest caption that passes all four checks:** `Q_img >= tau_img`, `Q_cap >= tau_cap`, `Q_KG >= tau_kg`, and `D <= delta`. If none pass, we try gentler lengths (75% to 95%), and then fall back to the best shorter caption.
+6. **Keep the shortest caption that passes all four checks:** `Q_img >= tau_img`, `Q_cap >= tau_cap`, `Q_KG >= tau_kg`, and `D <= delta`. If none pass, the original caption is kept.
 
 All settings used in the paper are in [`config.yaml`](config.yaml).
 
@@ -137,7 +137,7 @@ outputs/
 Each image ends with one of these statuses:
 
 - `compressed`: a shorter caption passed all checks.
-- `compressed_via_fallback`: no caption passed, so the best shorter one was kept.
+- `kept_original_none_passed`: no shorter caption passed all checks, so the original caption was kept.
 - `skipped_low_baseline_fidelity`: even the full caption could not be redrawn well, so the image was skipped.
 - `kept_original_rewriter_failed`: the rewriter returned no usable caption.
 

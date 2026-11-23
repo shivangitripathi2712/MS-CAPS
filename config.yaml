@@ -8,13 +8,15 @@
 #   Q_KG  = 0.4 * R_obj + 0.3 * R_attr + 0.3 * R_rel   (soft recall, KG of G(c') vs KG_I)
 #   D     = alpha * (1 - Q_img) + beta * (1 - Q_cap) + gamma * (1 - Q_KG)
 #   D_0   = same, for the full caption (beta term is 0 because Q_cap(c, c) = 1)
-#   delta = min((1 + epsilon) * D_0, absolute_threshold)
+#   delta = (1 + epsilon) * D_0
 #
 # Gate (all must hold): C1 Q_img >= tau_img, C2 Q_cap >= tau_cap,
 #                       C3 Q_KG >= tau_kg,   C4 D <= delta
 #
+# If no candidate passes, the original caption is kept.
+#
 # Calibration note: FLUX never sees the original image, so even the full caption
-# gives Q_img ~0.30-0.55 and D_0 ~0.29-0.35. Thresholds are set for that range.
+# gives only moderate Q_img. Thresholds are set for that range.
 
 paths:
   output_dir: "./outputs"
@@ -74,8 +76,8 @@ t2i:
 
 distortion:
   use_relative_threshold: true
-  epsilon: 0.50              # allow up to 50% more distortion than the full caption
-  absolute_threshold: 0.50   # cap on delta; must sit above typical D_0
+  epsilon: 1.5               # delta = (1 + epsilon) * D_0 (paper setting)
+  absolute_threshold: null   # no extra cap on delta (paper setting)
   weights:
     alpha_img: 0.4
     beta_cap: 0.2            # value used for the paper results
@@ -98,20 +100,20 @@ distortion:
 
 gate:
   tau_img: 0.30
-  tau_cap: 0.25
+  tau_cap: 0.20
   tau_kg: 0.30
 
 compression:
   max_iterations: 2
-  num_candidates_per_iteration: 7
-  # Token budgets as fractions of the original caption length (shortest first).
-  budget_ratios: [0.35, 0.40, 0.45, 0.50, 0.55, 0.65, 0.70]
-  # Used only if no candidate passes at the budgets above.
-  escalation_ratios: [0.75, 0.85, 0.95]
-  # Minimum length on every path:
+  num_candidates_per_iteration: 5
+  # Token budgets as fractions of the original caption length (paper: rho).
+  budget_ratios: [0.15, 0.25, 0.35, 0.45, 0.55]
+  # Optional retry budgets if nothing passes; empty = no retry (paper setting).
+  escalation_ratios: []
+  # Optional minimum length:
   #   max(min_caption_tokens, min_target_tokens, round(min_target_ratio * original_tokens))
-  min_target_ratio: 0.30
-  min_target_tokens: 25
+  min_target_ratio: 0.0
+  min_target_tokens: 0
   min_caption_tokens: 5
   require_strict_compression: true
   # Among passing candidates, pick the shortest one whose quality_metric is
@@ -131,7 +133,7 @@ fidelity_floors:
   attribute_recall_min_floor: 0.10
 
 fallback:
-  strategy: "best_candidate"  # or "keep_original"
+  strategy: "keep_original"   # paper setting; or "best_candidate"
 
 evaluation:
   save_intermediate: true    # save reconstructions, KGs, and candidates per sample

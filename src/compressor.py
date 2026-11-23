@@ -4,7 +4,7 @@ MS-CAPS compressor (KG-guided, reconstruction-based rate-distortion).
 For each (image I, caption c):
   1. Extract the reference knowledge graph KG_I from I with a VLM.
   2. Reconstruct G(c) from the full caption to get the baseline distortion D_0
-     and the distortion budget delta = min((1 + epsilon) * D_0, absolute_threshold).
+     and the distortion budget delta = (1 + epsilon) * D_0 (optionally capped by absolute_threshold).
      Samples whose full caption already reconstructs poorly are skipped.
   3. Derive strict anchors (verbatim phrases, e.g. visible text) and soft anchors
      (salient KG facts) that every compressed caption must keep.
@@ -12,8 +12,10 @@ For each (image I, caption c):
   5. Reconstruct each candidate, score Q_img / Q_cap / Q_KG and D, and apply the
      gate: C1 Q_img >= tau_img, C2 Q_cap >= tau_cap, C3 Q_KG >= tau_kg, C4 D <= delta.
   6. Keep the shortest passing caption (within quality_margin of the best
-     passer's quality). If none pass, try gentler budgets, then fall back to the
-     lowest-D shorter candidate. Repeat on the winner up to max_iterations times.
+     passer's quality). If none pass, optionally try gentler budgets
+     (escalation_ratios), then apply the fallback strategy: keep the original
+     caption (default, as in the paper) or the lowest-D shorter candidate.
+     Repeat on the winner up to max_iterations times.
 """
 import json
 import re
@@ -475,7 +477,7 @@ class KGRDCompressor:
         kg_object_weight: float = 0.4, kg_attribute_weight: float = 0.3, kg_relation_weight: float = 0.3,
         use_soft_kg: bool = True,
         tau_img: float = 0.50, tau_cap: float = 0.55, tau_kg: float = 0.45,
-        use_relative_threshold: bool = True, epsilon: float = 0.10, absolute_threshold: float = 0.25,
+        use_relative_threshold: bool = True, epsilon: float = 0.10, absolute_threshold: Optional[float] = 0.25,
         min_caption_tokens: int = 5,
         min_target_ratio: float = 0.0,
         min_target_tokens: int = 0,
@@ -500,7 +502,7 @@ class KGRDCompressor:
         self.t2i_seeds = t2i_seeds or [42]
         self.use_relative_threshold = bool(use_relative_threshold)
         self.epsilon = float(epsilon)
-        self.absolute_threshold = float(absolute_threshold)
+        self.absolute_threshold = None if absolute_threshold is None else float(absolute_threshold)
         self.use_soft_kg = bool(use_soft_kg)
         self.tau_img, self.tau_cap, self.tau_kg = float(tau_img), float(tau_cap), float(tau_kg)
         self.min_caption_tokens = int(min_caption_tokens)
@@ -779,7 +781,9 @@ class KGRDCompressor:
             soft_anchors = self._build_soft_anchors(kg_original, iw["comparison"])
             print(f"[Iter {iteration}] winner: {iw['tokens']}t  D={iw['scores']['D']:.4f}")
 
-        # 7. Resolve final (never the original unless rewriter produced nothing)
+        # 7. Resolve final: shortest passing candidate; otherwise follow the
+        #    fallback strategy ("keep_original" returns c, "best_candidate"
+        #    returns the closest shorter candidate).
         if winner is not None:
             final = winner
             status = "compressed"
@@ -788,10 +792,13 @@ class KGRDCompressor:
             status = "compressed_via_fallback"
             print(f"[FALLBACK] best below-threshold candidate D={final['scores']['D']:.4f}")
         else:
-            # Total rewriter failure: only case where original is returned.
             final = None
-            status = "kept_original_rewriter_failed"
-            print("[WARN] No usable candidate produced; returning original.")
+            if global_best_below is not None:
+                status = "kept_original_none_passed"
+                print("[KEEP] No candidate passed all checks; returning original caption.")
+            else:
+                status = "kept_original_rewriter_failed"
+                print("[WARN] No usable candidate produced; returning original.")
 
         if final is not None:
             final_caption = final["caption"]
