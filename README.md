@@ -1,6 +1,6 @@
 # MS-CAPS: Minimal Sufficient Image Captions for Safety-Critical Traffic Scene Understanding
 
-**Shivangi Tripathi, Heena Rathore**
+**Shivangi Tripathi, Heena Rathore**<br>
 Department of Computer Science, Texas State University, San Marcos, TX, USA
 
 Code for the paper **"MS-CAPS: Minimal Sufficient Image Captions for Safety-Critical Traffic Scene Understanding"** (Findings of EACL 2027).
